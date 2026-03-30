@@ -1,0 +1,101 @@
+{
+  "success": true,
+  "model": "sonar",
+  "question": "JUST IN: Goldman Sa        \"text\": \"JUST IN: Elon Musk says \\\"AI content will vastly exceed all human content.\\\"\",chs says crypto prices may have bottomed.",
+  "perplexity_response": {
+    "id": "8f2110c0-6965-4d97-8ff1-1dcd30ea4ec3",
+    "model": "sonar",
+    "created": 1774551246,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 311,
+      "total_tokens": 353,
+      "search_context_size": "low",
+      "cost": {
+        "input_tokens_cost": 0.00004,
+        "output_tokens_cost": 0.00031,
+        "request_cost": 0.005,
+        "total_cost": 0.00535
+      }
+    },
+    "citations": [
+      "https://www.businessinsider.com/elon-musk-says-ai-will-outsmart-humans-by-2026-2024-4",
+      "https://www.uniladtech.com/news/ai/elon-musk-prediction-ai-happening-2026-058827-20260209",
+      "https://fortune.com/2026/01/19/when-does-elon-musk-say-work-will-be-optional-and-money-will-be-irrelevant-ai-robotics/",
+      "https://www.youtube.com/watch?v=Q7FR-so-7Kw",
+      "https://www.windowscentral.com/software-apps/elon-musk-guesses-ai-will-be-brighter-than-people-by-the-end-of-2026-but-theres-a-20-chance-it-might-end-humanity-anyway",
+      "https://www.youtube.com/watch?v=9tqcC3arJcs"
+    ],
+    "search_results": [
+      {
+        "title": "Elon Musk Says AI Will Outsmart Humans by 2026 - Business Insider",
+        "url": "https://www.businessinsider.com/elon-musk-says-ai-will-outsmart-humans-by-2026-2024-4",
+        "date": "2024-04-09",
+        "last_updated": "2024-04-09",
+        "snippet": "Tech billionaire Elon Musk believes AI will outsmart humans by 2026. But data scarcity and a chip shortage may get in the way.",
+        "source": "web"
+      },
+      {
+        "title": "Elon Musk makes eerie prediction of the end of AI and he thinks it's ...",
+        "url": "https://www.uniladtech.com/news/ai/elon-musk-prediction-ai-happening-2026-058827-20260209",
+        "date": "2026-02-09",
+        "last_updated": "2026-03-26",
+        "snippet": "\"My prediction is that by far the cheapest place to put AI will be space in 36 months or less, maybe 30 months,\" the world's richest man ...",
+        "source": "web"
+      },
+      {
+        "title": "Elon Musk: AI, robotics will make work optional and money irrelevant ...",
+        "url": "https://fortune.com/2026/01/19/when-does-elon-musk-say-work-will-be-optional-and-money-will-be-irrelevant-ai-robotics/",
+        "date": "2026-01-19",
+        "last_updated": "2026-03-25",
+        "snippet": "Elon Musk says that in 10 to 20 years, work will be optional and money will be irrelevant thanks to AI and robotics · Addressing growing pains of ...",
+        "source": "web"
+      },
+      {
+        "title": "Elon Musk says AI will be smarter than humanity by end of decade",
+        "url": "https://www.youtube.com/watch?v=Q7FR-so-7Kw",
+        "date": "2026-01-23",
+        "last_updated": "2026-01-24",
+        "snippet": "This content isn't available. Elon Musk told the World Economic Forum he believes artificial intelligence will be smarter than all of ...",
+        "source": "web"
+      },
+      {
+        "title": "Elon Musk says AI will be smarter than people by the end of 2026",
+        "url": "https://www.windowscentral.com/software-apps/elon-musk-guesses-ai-will-be-brighter-than-people-by-the-end-of-2026-but-theres-a-20-chance-it-might-end-humanity-anyway",
+        "date": "2024-04-11",
+        "last_updated": "2026-02-28",
+        "snippet": "AI will have outsmarted humans by the end of 2026, but the lack of sufficient electricity and quality data might prevent it from happening.",
+        "source": "web"
+      },
+      {
+        "title": "Says AI Could Surpass Human Intelligence | Musk Davos Speech",
+        "url": "https://www.youtube.com/watch?v=9tqcC3arJcs",
+        "date": "2026-01-22",
+        "last_updated": "2026-02-21",
+        "snippet": "Tech billionaire Elon Musk shared his vision for a future defined by 'sustainable abundance' through AI and robotics during a session at the ...",
+        "source": "web"
+      }
+    ],
+    "object": "chat.completion",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "**No verified evidence confirms Elon Musk recently said \"AI content will vastly exceed all human content,\" based on available sources.** Searches primarily cover Musk's predictions on AI intelligence timelines, such as AI surpassing individual human intelligence by the end of 2026 and all humanity by 2030[1][5][6], but none match the exact quote about **AI content** volume.\n\n### Key Musk AI Predictions from Sources\n- **Intelligence milestones**: Musk revised his timeline, predicting AI smarter than any single human by late 2026 (previously 2029-2030), driven by talent influx like physicists entering AI, though limited by electricity, chips, and data scarcity[1][5].\n- **Power challenges**: By 2025-2026, AI may face electricity shortages; Musk suggests space-based AI data centers as the \"cheapest\" solution within 30-36 months[2].\n- **Broader impacts**: In 10-20 years, AI and robotics could make work optional, money irrelevant, and extend lifespans via \"reprogramming\" aging[3].\n- **Past statements**: At Davos/World Economic Forum, Musk forecasted AI exceeding all human intelligence by decade's end[4][6].\n\nThe query's quoted statement may stem from a misattribution, unverified social media post, or paraphrase not captured here. Goldman Sachs comments on crypto \"bottoming\" appear unrelated to Musk or AI in these results. For real-time verification, check Musk's X account directly."
+        },
+        "delta": {
+          "role": "assistant",
+          "content": ""
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  }
+}
+
+
+
+here the issue is when i ask about some context 
+if it not provided the exact data then we can skip that content
+by implementing the ai agents 
