@@ -28,7 +28,7 @@ TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 # Twitter Configuration
-TWITTER_HANDLES = os.getenv("TWITTER_HANDLES", "WatcherGuru")
+TWITTER_HANDLES = os.getenv("TWITTER_HANDLES", "BRICSinfo")
 TWITTER_USERNAME = os.getenv("TWITTER_USERNAME")
 TWITTER_PASSWORD = os.getenv("TWITTER_PASSWORD")
 
@@ -45,6 +45,21 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL:
 
 # Initialize Telegram Bot
 telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+
+# Keep-alive task for Render (prevents service from going inactive)
+async def keep_alive_task():
+    """Logs every 5 minutes to keep Render service active"""
+    while True:
+        await asyncio.sleep(300)  # 5 minutes
+        print(f"[Keep-Alive] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Service is active")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks when app starts"""
+    asyncio.create_task(keep_alive_task())
+    print(f"[Startup] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Keep-alive task started (5min interval)")
 
 
 async def scrape_twitter_user(handle: str, since_time: datetime, until_time: datetime):
@@ -561,4 +576,368 @@ async def ask_perplexity(
         raise HTTPException(
             status_code=500,
             detail=f"Error calling Perplexity API: {str(e)}"
+        )
+
+
+async def scrape_images_from_url(url: str):
+    """
+    Scrape all image URLs from a given webpage.
+    Uses Playwright to load the page and extract image sources.
+    """
+    images = []
+    errors = []
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
+        )
+        
+        context = await browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+        
+        page = await context.new_page()
+        
+        try:
+            # Navigate to the URL with longer timeout and less strict wait
+            response = await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            
+            if not response:
+                errors.append("Failed to load page: no response")
+                await browser.close()
+                return images, errors
+            
+            if response.status >= 400:
+                errors.append(f"Failed to load page: HTTP {response.status}")
+                await browser.close()
+                return images, errors
+            
+            # Wait for network to be mostly idle (some resources may still load)
+            try:
+                await page.wait_for_load_state('networkidle', timeout=15000)
+            except:
+                pass  # Continue even if networkidle times out
+            
+            # Wait a bit for dynamic content
+            await asyncio.sleep(2)
+            
+            # Extract all image elements
+            image_elements = await page.query_selector_all('img')
+            
+            for img in image_elements:
+                try:
+                    # Get src attribute
+                    src = await img.get_attribute('src')
+                    
+                    # Get data-src (lazy loading)
+                    data_src = await img.get_attribute('data-src')
+                    
+                    # Get srcset
+                    srcset = await img.get_attribute('srcset')
+                    
+                    # Get alt text
+                    alt = await img.get_attribute('alt') or ''
+                    
+                    # Process src
+                    if src:
+                        # Convert relative URLs to absolute
+                        if src.startswith('//'):
+                            src = f"https:{src}"
+                        elif src.startswith('/'):
+                            # Extract base URL
+                            from urllib.parse import urlparse
+                            parsed = urlparse(url)
+                            base = f"{parsed.scheme}://{parsed.netloc}"
+                            src = f"{base}{src}"
+                        elif not src.startswith(('http://', 'https://', 'data:')):
+                            # Relative path without leading slash
+                            from urllib.parse import urljoin
+                            src = urljoin(url, src)
+                        
+                        # Skip common non-content images
+                        skip_patterns = [
+                            'logo', 'icon', 'avatar', 'profile', 'button',
+                            'spinner', 'loading', 'close', 'menu', 'arrow',
+                            'facebook.com/tr', 'tracking', 'pixel', 'beacon',
+                            'data:image/svg+xml', '1x1', 'blank'
+                        ]
+                        
+                        src_lower = src.lower()
+                        should_skip = any(pattern in src_lower for pattern in skip_patterns)
+                        
+                        if src.startswith(('http://', 'https://')) and not should_skip:
+                            # Try to get dimensions
+                            width = await img.get_attribute('width') or ''
+                            height = await img.get_attribute('height') or ''
+                            
+                            # Evaluate natural dimensions if possible
+                            try:
+                                dimensions = await img.evaluate('el => ({ w: el.naturalWidth, h: el.naturalHeight })')
+                                natural_width = dimensions.get('w', 0)
+                                natural_height = dimensions.get('h', 0)
+                            except:
+                                natural_width = 0
+                                natural_height = 0
+                            
+                            # Only include images that are reasonably sized (not tracking pixels)
+                            if natural_width > 50 or natural_height > 50 or (not width and not height):
+                                images.append({
+                                    'url': src,
+                                    'alt': alt,
+                                    'width': natural_width or width,
+                                    'height': natural_height or height,
+                                    'source': 'src'
+                                })
+                    
+                    # Process data-src for lazy-loaded images
+                    if data_src and data_src not in [img['url'] for img in images]:
+                        if data_src.startswith('//'):
+                            data_src = f"https:{data_src}"
+                        elif data_src.startswith('/'):
+                            from urllib.parse import urlparse
+                            parsed = urlparse(url)
+                            base = f"{parsed.scheme}://{parsed.netloc}"
+                            data_src = f"{base}{data_src}"
+                        elif not data_src.startswith(('http://', 'https://', 'data:')):
+                            from urllib.parse import urljoin
+                            data_src = urljoin(url, data_src)
+                        
+                        if data_src.startswith(('http://', 'https://')):
+                            images.append({
+                                'url': data_src,
+                                'alt': alt,
+                                'width': None,
+                                'height': None,
+                                'source': 'data-src'
+                            })
+                    
+                    # Process srcset for responsive images
+                    if srcset:
+                        # Parse srcset and get the largest image
+                        srcset_entries = srcset.split(',')
+                        largest_url = None
+                        largest_width = 0
+                        
+                        for entry in srcset_entries:
+                            parts = entry.strip().split(' ')
+                            if len(parts) >= 1:
+                                img_url = parts[0].strip()
+                                width_desc = parts[1].strip() if len(parts) > 1 else ''
+                                
+                                # Parse width descriptor (e.g., "800w")
+                                if width_desc.endswith('w'):
+                                    try:
+                                        w = int(width_desc[:-1])
+                                        if w > largest_width:
+                                            largest_width = w
+                                            largest_url = img_url
+                                    except:
+                                        pass
+                                elif not largest_url:
+                                    largest_url = img_url
+                        
+                        if largest_url and largest_url not in [img['url'] for img in images]:
+                            if largest_url.startswith('//'):
+                                largest_url = f"https:{largest_url}"
+                            elif largest_url.startswith('/'):
+                                from urllib.parse import urlparse
+                                parsed = urlparse(url)
+                                base = f"{parsed.scheme}://{parsed.netloc}"
+                                largest_url = f"{base}{largest_url}"
+                            elif not largest_url.startswith(('http://', 'https://', 'data:')):
+                                from urllib.parse import urljoin
+                                largest_url = urljoin(url, largest_url)
+                            
+                            if largest_url.startswith(('http://', 'https://')):
+                                images.append({
+                                    'url': largest_url,
+                                    'alt': alt,
+                                    'width': largest_width,
+                                    'height': None,
+                                    'source': 'srcset'
+                                })
+                                
+                except Exception as e:
+                    errors.append(f"Image extraction error: {str(e)[:50]}")
+                    continue
+            
+            # Also look for meta/OpenGraph images
+            try:
+                og_image = await page.query_selector('meta[property="og:image"]')
+                if og_image:
+                    og_src = await og_image.get_attribute('content')
+                    if og_src and og_src not in [img['url'] for img in images]:
+                        if og_src.startswith('//'):
+                            og_src = f"https:{og_src}"
+                        elif og_src.startswith('/'):
+                            from urllib.parse import urlparse
+                            parsed = urlparse(url)
+                            base = f"{parsed.scheme}://{parsed.netloc}"
+                            og_src = f"{base}{og_src}"
+                        elif not og_src.startswith(('http://', 'https://', 'data:')):
+                            from urllib.parse import urljoin
+                            og_src = urljoin(url, og_src)
+                        
+                        if og_src.startswith(('http://', 'https://')):
+                            images.append({
+                                'url': og_src,
+                                'alt': 'OpenGraph Image',
+                                'width': None,
+                                'height': None,
+                                'source': 'og:image'
+                            })
+                
+                # Twitter card image
+                twitter_image = await page.query_selector('meta[name="twitter:image"], meta[property="twitter:image"]')
+                if twitter_image:
+                    twitter_src = await twitter_image.get_attribute('content')
+                    if twitter_src and twitter_src not in [img['url'] for img in images]:
+                        if twitter_src.startswith('//'):
+                            twitter_src = f"https:{twitter_src}"
+                        elif twitter_src.startswith('/'):
+                            from urllib.parse import urlparse
+                            parsed = urlparse(url)
+                            base = f"{parsed.scheme}://{parsed.netloc}"
+                            twitter_src = f"{base}{twitter_src}"
+                        elif not twitter_src.startswith(('http://', 'https://', 'data:')):
+                            from urllib.parse import urljoin
+                            twitter_src = urljoin(url, twitter_src)
+                        
+                        if twitter_src.startswith(('http://', 'https://')):
+                            images.append({
+                                'url': twitter_src,
+                                'alt': 'Twitter Card Image',
+                                'width': None,
+                                'height': None,
+                                'source': 'twitter:image'
+                            })
+            except Exception as e:
+                errors.append(f"Meta image extraction error: {str(e)[:50]}")
+            
+        except Exception as e:
+            errors.append(f"Page scrape failed: {str(e)[:100]}")
+        finally:
+            await browser.close()
+    
+    # Remove duplicates based on URL
+    seen_urls = set()
+    unique_images = []
+    for img in images:
+        if img['url'] not in seen_urls:
+            seen_urls.add(img['url'])
+            unique_images.append(img)
+    
+    return unique_images, errors
+
+
+@app.post("/scrape-citation-images")
+async def scrape_citation_images(
+    citations: str = Form(..., description="Comma-separated list of citation URLs from Perplexity"),
+    min_width: int = Form(100, description="Minimum image width to include (default: 100px)"),
+    min_height: int = Form(100, description="Minimum image height to include (default: 100px)")
+):
+    """
+    Scrape images from Perplexity citation URLs.
+    
+    - **citations**: Comma-separated list of URLs to scrape for images
+    - **min_width**: Minimum width filter for images (default: 100)
+    - **min_height**: Minimum height filter for images (default: 100)
+    
+    Returns a list of image URLs found on each citation page, with metadata.
+    
+    **Example:**
+    citations: "https://example.com/article1, https://example.com/article2"
+    """
+    if not citations:
+        raise HTTPException(
+            status_code=400,
+            detail="No citations provided. Please provide a comma-separated list of URLs."
+        )
+    
+    # Parse citation URLs
+    url_list = [url.strip() for url in citations.split(',') if url.strip()]
+    
+    if not url_list:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid URLs found in citations."
+        )
+    
+    results = {
+        "query_info": {
+            "total_urls": len(url_list),
+            "urls": url_list,
+            "min_width": min_width,
+            "min_height": min_height
+        },
+        "citations": []
+    }
+    
+    try:
+        # Scrape images from each URL
+        for url in url_list:
+            citation_result = {
+                "url": url,
+                "images": [],
+                "errors": [],
+                "total_found": 0
+            }
+            
+            try:
+                images, errors = await scrape_images_from_url(url)
+                
+                # Filter images by minimum dimensions
+                filtered_images = []
+                for img in images:
+                    width = img.get('width') or 0
+                    height = img.get('height') or 0
+                    
+                    # Convert to int if string
+                    if isinstance(width, str):
+                        try:
+                            width = int(width)
+                        except:
+                            width = 0
+                    if isinstance(height, str):
+                        try:
+                            height = int(height)
+                        except:
+                            height = 0
+                    
+                    # Apply filters (skip if dimensions known and too small)
+                    if (width == 0 or width >= min_width) and (height == 0 or height >= min_height):
+                        filtered_images.append(img)
+                
+                citation_result["images"] = filtered_images
+                citation_result["total_found"] = len(filtered_images)
+                citation_result["errors"] = errors[:3]  # Limit errors shown
+                
+            except Exception as e:
+                citation_result["errors"].append(f"Failed to scrape: {str(e)[:100]}")
+            
+            results["citations"].append(citation_result)
+        
+        # Calculate totals
+        total_images = sum(c["total_found"] for c in results["citations"])
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "total_citations": len(url_list),
+                "total_images": total_images,
+                "data": results
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error scraping citation images: {str(e)}"
         )
