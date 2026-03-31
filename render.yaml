@@ -14,11 +14,14 @@ services:
     runtime: python
     plan: free
     buildCommand: |
-      pip install -r requirements.txt && python -m playwright install chromium
+      pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src python -m playwright install chromium
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      # CRITICAL: Must match the path used in buildCommand so Playwright finds the browser at runtime
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/src
       - key: TELEGRAM_BOT_TOKEN
         sync: false  # Set in Render dashboard
       - key: TELEGRAM_CHANNEL
