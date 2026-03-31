@@ -880,9 +880,7 @@ class ContentWorkflow:
         
         print(f"{'='*60}")
         
-        # Update state
-        self.state.last_run_time = until_time
-        self.state.save()
+        # State is in-memory only — no file save needed
         
         print(f"\n[Workflow] Cycle complete:")
         print(f"  - Posts processed: {processed_count}")
