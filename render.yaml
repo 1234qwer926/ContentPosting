@@ -35,3 +35,8 @@ services:
         sync: false
       - key: TWITTER_PASSWORD
         sync: false
+      # Security: API key for protecting endpoints (generate a strong random key)
+      - key: API_SECRET_KEY
+        sync: false
+      - key: ENVIRONMENT
+        value: production

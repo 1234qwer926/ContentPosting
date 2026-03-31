@@ -14,11 +14,57 @@ import re
 # Load environment variables from .env file
 load_dotenv()
 
+# Check if production mode (disable docs in production)
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development").lower() == "production"
+
 app = FastAPI(
-    title="FastAPI Backend",
-    description="Minimal FastAPI backend with health check, Telegram, Discord, and Twitter integration",
-    version="1.0.0"
+    title="Content Posting API",
+    description="API for automated content posting to Telegram and Discord",
+    version="1.0.0",
+    # Disable docs in production for security
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None if IS_PRODUCTION else "/redoc",
+    openapi_url=None if IS_PRODUCTION else "/openapi.json"
 )
+
+# Add API Key authentication
+from fastapi.security import APIKeyHeader
+from fastapi import Security, status
+
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    """Verify API key for protected endpoints"""
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key required"
+        )
+    
+    expected_key = os.getenv("API_SECRET_KEY")
+    if not expected_key:
+        # If no API key configured, allow access (for development)
+        return api_key
+    
+    if api_key != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid API key"
+        )
+    return api_key
+
+
+# Add security headers middleware
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    return response
 
 # Telegram Bot Configuration from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -349,7 +395,7 @@ async def health_check():
     )
 
 
-@app.post("/send-to-telegram")
+@app.post("/send-to-telegram", dependencies=[Security(verify_api_key)])
 async def send_to_telegram(
     text: str = Form(..., description="Text message to send to the channel"),
     image: UploadFile = File(..., description="Image file to send along with the text")
@@ -398,7 +444,7 @@ async def send_to_telegram(
         )
 
 
-@app.post("/send-to-discord")
+@app.post("/send-to-discord", dependencies=[Security(verify_api_key)])
 async def send_to_discord(
     text: str = Form(..., description="Text message to send to Discord"),
     image: UploadFile = File(..., description="Image file to send along with the text")
@@ -541,7 +587,7 @@ async def fetch_twitter_posts(
         )
 
 
-@app.post("/ask-perplexity")
+@app.post("/ask-perplexity", dependencies=[Security(verify_api_key)])
 async def ask_perplexity(
     question: str = Form(..., description="The question to ask Perplexity AI"),
     model: str = Form("sonar", description="Perplexity model to use (default: sonar). Options: sonar, sonar-pro, sonar-reasoning")
@@ -882,7 +928,7 @@ async def scrape_images_from_url(url: str):
     return unique_images, errors
 
 
-@app.post("/scrape-citation-images")
+@app.post("/scrape-citation-images", dependencies=[Security(verify_api_key)])
 async def scrape_citation_images(
     citations: str = Form(..., description="Comma-separated list of citation URLs from Perplexity"),
     min_width: int = Form(100, description="Minimum image width to include (default: 100px)"),
