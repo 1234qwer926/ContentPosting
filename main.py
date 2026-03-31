@@ -47,6 +47,11 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL:
 telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 
+# Import workflow components
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
 # Keep-alive task for Render (prevents service from going inactive)
 async def keep_alive_task():
     """Logs every 5 minutes to keep Render service active"""
@@ -55,11 +60,52 @@ async def keep_alive_task():
         print(f"[Keep-Alive] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Service is active")
 
 
+# Workflow task - runs the entire content workflow every 30 minutes
+async def workflow_task():
+    """Run content workflow every 30 minutes"""
+    # Import here to avoid circular imports
+    from content_workflow import ContentWorkflow
+    
+    print(f"[Workflow-Task] Starting workflow background task")
+    
+    # Wait a bit for app to fully start
+    await asyncio.sleep(10)
+    
+    workflow = ContentWorkflow()
+    
+    while True:
+        try:
+            print(f"[Workflow-Task] Running workflow cycle...")
+            await workflow.run_cycle()
+            print(f"[Workflow-Task] Cycle complete. Waiting for next 30-minute window...")
+        except Exception as e:
+            print(f"[Workflow-Task] Error in workflow cycle: {e}")
+        
+        # Calculate sleep until next 30-minute boundary
+        now = datetime.now()
+        if now.minute < 30:
+            next_run = now.replace(minute=30, second=0, microsecond=0)
+        else:
+            next_run = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        
+        sleep_seconds = (next_run - now).total_seconds()
+        print(f"[Workflow-Task] Next run at {next_run.strftime('%H:%M:%S')} (sleeping {int(sleep_seconds/60)}m)")
+        await asyncio.sleep(sleep_seconds)
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks when app starts"""
+    # Start keep-alive task
     asyncio.create_task(keep_alive_task())
     print(f"[Startup] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Keep-alive task started (5min interval)")
+    
+    # Start workflow task (if environment variables are configured)
+    if PERPLEXITY_API_KEY and DISCORD_WEBHOOK_URL:
+        asyncio.create_task(workflow_task())
+        print(f"[Startup] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Workflow task started (30min interval)")
+    else:
+        print(f"[Startup] Workflow task not started - missing environment variables")
 
 
 async def scrape_twitter_user(handle: str, since_time: datetime, until_time: datetime):

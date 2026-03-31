@@ -1,0 +1,37 @@
+# Render.com Blueprint
+# This file configures your service for deployment on Render
+#
+# IMPORTANT: This deployment includes:
+# 1. FastAPI web server with all endpoints
+# 2. Background workflow that runs every 30 minutes (inside the web service)
+# 3. Keep-alive task to prevent Render free tier from sleeping
+#
+# No separate cron jobs or workers needed - everything runs in the web service!
+
+services:
+  - type: web
+    name: content-posting-api
+    runtime: python
+    plan: free
+    buildCommand: |
+      pip install -r requirements.txt
+      playwright install chromium
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # Set in Render dashboard
+      - key: TELEGRAM_CHANNEL
+        sync: false  # Set in Render dashboard
+      - key: DISCORD_WEBHOOK_URL
+        sync: false  # Set in Render dashboard
+      - key: PERPLEXITY_API_KEY
+        sync: false  # Set in Render dashboard
+      - key: TWITTER_HANDLES
+        value: BRICSinfo
+      # Optional: Add these if you want to use them
+      # - key: TWITTER_USERNAME
+      #   sync: false
+      # - key: TWITTER_PASSWORD
+      #   sync: false
