@@ -29,9 +29,9 @@ services:
       - key: PERPLEXITY_API_KEY
         sync: false  # Set in Render dashboard
       - key: TWITTER_HANDLES
-        value: BRICSinfo
-      # Optional: Add these if you want to use them
-      # - key: TWITTER_USERNAME
-      #   sync: false
-      # - key: TWITTER_PASSWORD
-      #   sync: false
+        value: false  # Set in Render dashboard (comma-separated list of Twitter handles without @)
+      # Optional: Twitter login credentials (only needed if scraping requires auth)
+      - key: TWITTER_USERNAME
+        sync: false
+      - key: TWITTER_PASSWORD
+        sync: false
