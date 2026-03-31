@@ -42,8 +42,6 @@ TWITTER_PASSWORD = os.getenv("TWITTER_PASSWORD")
 
 PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions"
 
-# State file to track last run time
-STATE_FILE = ".workflow_state.json"
 
 
 @dataclass
@@ -87,53 +85,23 @@ class ProcessedContent:
 
 
 class WorkflowState:
-    """Manages workflow state (last run time, processed posts, etc.)"""
-    
+    """In-memory workflow state — no file I/O (safe for Render's ephemeral filesystem).
+    Processed post IDs are kept in RAM; time windows are derived from datetime.now().
+    """
+
     def __init__(self):
-        self.last_run_time: Optional[datetime] = None
+        # Keeps track of posts processed this session to avoid double-publishing
         self.processed_post_ids: set = set()
-        self.load()
-    
-    def load(self):
-        """Load state from file"""
-        if os.path.exists(STATE_FILE):
-            try:
-                with open(STATE_FILE, 'r') as f:
-                    data = json.load(f)
-                    if data.get('last_run_time'):
-                        self.last_run_time = datetime.fromisoformat(data['last_run_time'])
-                    self.processed_post_ids = set(data.get('processed_post_ids', []))
-            except Exception as e:
-                print(f"[State] Error loading state: {e}")
-                self.last_run_time = None
-    
-    def save(self):
-        """Save state to file"""
-        try:
-            # Convert to naive datetime for storage
-            last_run = self.last_run_time
-            if last_run and last_run.tzinfo:
-                last_run = last_run.astimezone().replace(tzinfo=None)
-            
-            data = {
-                'last_run_time': last_run.isoformat() if last_run else None,
-                'processed_post_ids': list(self.processed_post_ids)
-            }
-            with open(STATE_FILE, 'w') as f:
-                json.dump(data, f)
-        except Exception as e:
-            print(f"[State] Error saving state: {e}")
-    
+
     def mark_post_processed(self, post_id: str):
-        """Mark a post as processed to avoid duplicates"""
+        """Mark a post as processed."""
         self.processed_post_ids.add(post_id)
-        # Keep only last 1000 IDs to prevent file bloat
+        # Cap memory usage — keep the most recent 500 IDs
         if len(self.processed_post_ids) > 1000:
             self.processed_post_ids = set(list(self.processed_post_ids)[-500:])
-        self.save()
-    
+
     def is_post_processed(self, post_id: str) -> bool:
-        """Check if a post has already been processed"""
+        """Check if a post has already been processed this session."""
         return post_id in self.processed_post_ids
 
 
@@ -774,14 +742,15 @@ class ContentWorkflow:
         self.image_scraper = ImageScraper()
         self.publisher = ContentPublisher()
     
-    def _get_last_30min_boundary(self, dt: datetime) -> datetime:
-        """Get the last 30-minute boundary (e.g., 8:00, 8:30, 9:00)"""
-        # Handle both timezone-aware and naive datetimes
-        if dt.tzinfo:
-            return dt.replace(minute=0 if dt.minute < 30 else 30, second=0, microsecond=0)
-        else:
-            return dt.replace(minute=0 if dt.minute < 30 else 30, second=0, microsecond=0)
-    
+    def _get_current_30min_boundary(self, dt: datetime) -> datetime:
+        """Get the start of the current 30-minute slot (e.g., 8:17 → 8:00, 8:45 → 8:30)"""
+        return dt.replace(minute=0 if dt.minute < 30 else 30, second=0, microsecond=0)
+
+    def _get_previous_30min_boundary(self, dt: datetime) -> datetime:
+        """Get the start of the PREVIOUS 30-minute slot (e.g., 8:17 → 7:30, 8:45 → 8:00)"""
+        current = self._get_current_30min_boundary(dt)
+        return current - timedelta(minutes=30)
+
     def _get_next_30min_boundary(self, dt: datetime) -> datetime:
         """Get the next 30-minute boundary"""
         if dt.minute < 30:
@@ -798,30 +767,14 @@ class ContentWorkflow:
         
         # Use local time for all calculations
         now_local = datetime.now()
-        
-        # Calculate time window based on 30-minute boundaries in local time
-        if self.state.last_run_time:
-            # Convert stored time to naive local time if it has timezone info
-            last_run = self.state.last_run_time
-            if last_run.tzinfo:
-                last_run = last_run.astimezone().replace(tzinfo=None)
-            
-            # Check if last run was more than 30 minutes ago
-            time_since_last_run = (now_local - last_run).total_seconds()
-            
-            if time_since_last_run > 30 * 60:
-                # Last run was long ago - realign to last 30-minute boundary
-                since_time = self._get_last_30min_boundary(now_local)
-                print(f"[Workflow] Last run was {int(time_since_last_run/60)}m ago, realigning to boundary")
-            else:
-                # Continue from last run (within 30 min window)
-                since_time = last_run
-        else:
-            # First run ever - align to last 30-minute boundary
-            since_time = self._get_last_30min_boundary(now_local)
-        
+
+        # Always derive the window from the current clock — no file state needed.
+        # At 12:02  → since=11:30, until=12:02  (covers the 11:30–12:00 slot)
+        # At 12:30  → since=12:00, until=12:30  (covers the 12:00–12:30 slot)
+        # At 13:00  → since=12:30, until=13:00  (covers the 12:30–13:00 slot)
+        since_time = self._get_previous_30min_boundary(now_local)
         until_time = now_local
-        
+
         print(f"[Workflow] Time window: {since_time.strftime('%H:%M')} to {until_time.strftime('%H:%M')}")
         
         # Parse handles
@@ -838,8 +791,6 @@ class ContentWorkflow:
         
         if not all_posts:
             print("[Workflow] No new posts to process")
-            self.state.last_run_time = until_time
-            self.state.save()
             return
         
         # Process each post
