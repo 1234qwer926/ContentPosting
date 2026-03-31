@@ -303,7 +303,7 @@ class PerplexityAnalyzer:
                         citations = data.get('citations', [])
                         
                         # Check if response has verified evidence
-                        has_verified = self._has_verified_evidence(content)
+                        has_verified = self._has_verified_evidence(content, citations)
                         
                         return PerplexityResult(
                             original_post=post,
@@ -321,46 +321,14 @@ class PerplexityAnalyzer:
             print(f"[Perplexity] Error analyzing post: {e}")
             return None
     
-    def _has_verified_evidence(self, content: str) -> bool:
-        """Check if Perplexity response contains verified evidence"""
-        # Patterns that indicate no verified evidence
-        negative_patterns = [
-            r'no verified evidence',
-            r'no evidence confirms',
-            r'cannot verify',
-            r'not verified',
-            r'unverified',
-            r'misattribution',
-            r'no sources confirm',
-            r'no confirmation',
-            r'no data supports',
-            r'no reliable sources',
-            r'check.*directly',  # "check X account directly"
-            r'appears? to be (?:false|incorrect|untrue)',
-            r'not.*(?:confirmed|verified|supported)',
-        ]
+    def _has_verified_evidence(self, content: str, citations: list) -> bool:
+        """Check if Perplexity response has backing sources.
         
-        content_lower = content.lower()
-        
-        for pattern in negative_patterns:
-            if re.search(pattern, content_lower):
-                return False
-        
-        # Must have some positive indicators
-        positive_indicators = [
-            r'according to',
-            r'reports? (?:from|by)',
-            r'sources? (?:confirm|indicate|say)',
-            r'data shows',
-            r'evidence suggests',
-            r'confirmed by',
-            r'(?:is|are) expected to',
-            r'(?:will|would|could) (?:lead to|result in|cause)',
-        ]
-        
-        has_positive = any(re.search(p, content_lower) for p in positive_indicators)
-        
-        return has_positive
+        Simple rule: if Perplexity cited at least 1 source, the content is
+        considered verified. Perplexity only adds citations when it found
+        real evidence — no citations means it couldn't back the claim.
+        """
+        return len(citations) > 0
 
 
 class ImageScraper:
@@ -825,26 +793,45 @@ class ContentWorkflow:
             
             print(f"[Workflow] ✓ Perplexity analysis received ({len(result.response_content)} chars)")
             print(f"[Workflow] Citations: {len(result.citations)}")
-            
-            # Step 2: Check if has verified evidence
-            print(f"[Workflow] Step 2/5: Checking for verified evidence...")
+
+            # --- Verbose: print full Perplexity response ---
+            print(f"[Perplexity] --- Full Response ({len(result.response_content)} chars) ---")
+            # Print in 200-char chunks so it doesn't get cut off in logs
+            for chunk_start in range(0, len(result.response_content), 200):
+                print(f"[Perplexity] {result.response_content[chunk_start:chunk_start+200]}")
+            print(f"[Perplexity] --- End Response ---")
+
+            # --- Verbose: print all citation URLs ---
+            if result.citations:
+                print(f"[Perplexity] Citations ({len(result.citations)}):")
+                for ci, cit in enumerate(result.citations, 1):
+                    print(f"[Perplexity]   [{ci}] {cit}")
+            else:
+                print(f"[Perplexity] No citations returned")
+
+            # Step 2: Skip only if Perplexity returned NO response at all
+            # (has_verified_evidence is now purely citation-count based, but
+            #  we keep this step for logging clarity)
+            print(f"[Workflow] Step 2/5: Evidence check (citations={len(result.citations)})...")
             if not result.has_verified_evidence:
-                print(f"[Workflow] ⚠ No verified evidence found - SKIPPING")
+                print(f"[Workflow] ⚠ No citations from Perplexity - SKIPPING")
                 skipped_count += 1
                 self.state.mark_post_processed(post_id)
                 continue
-            
-            print(f"[Workflow] ✓ Verified evidence confirmed")
-            
+
+            print(f"[Workflow] ✓ Evidence confirmed ({len(result.citations)} citations)")
+
             # Step 3: Scrape images from citations
             print(f"[Workflow] Step 3/5: Scraping images from {len(result.citations)} citations...")
             images = []
             if result.citations:
                 images = await self.image_scraper.scrape_from_citations(result.citations, min_width=200, min_height=150)
-                print(f"[Workflow] ✓ Scraped {len(images)} images from citations")
+                print(f"[Workflow] Scraped {len(images)} images total")
                 if images:
-                    for idx, img in enumerate(images[:3], 1):
-                        print(f"[Workflow]   Image {idx}: {img.url[:60]}... ({img.width}x{img.height})")
+                    for idx, img in enumerate(images, 1):
+                        print(f"[Workflow]   Image {idx}: {img.url} ({img.width}x{img.height}) [{img.source}]")
+                else:
+                    print(f"[Workflow] No images scraped from citations")
             else:
                 print(f"[Workflow] No citations available for image scraping")
             
