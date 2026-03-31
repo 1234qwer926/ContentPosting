@@ -100,10 +100,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Keep-alive task for Render (prevents service from going inactive)
 async def keep_alive_task():
-    """Logs every 5 minutes to keep Render service active"""
+    """Pings own /health endpoint every 4 minutes to prevent Render free tier spin-down"""
+    # Wait for server to fully start before first ping
+    await asyncio.sleep(60)
+    
+    # Determine self URL: Render sets RENDER_EXTERNAL_URL automatically
+    service_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:10000")
+    ping_url = f"{service_url.rstrip('/')}/health"
+    
     while True:
-        await asyncio.sleep(300)  # 5 minutes
-        print(f"[Keep-Alive] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Service is active")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    print(f"[Keep-Alive] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Ping OK ({resp.status}) → {ping_url}")
+        except Exception as e:
+            print(f"[Keep-Alive] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Ping failed: {e}")
+        
+        await asyncio.sleep(240)  # every 4 minutes
 
 
 # Workflow task - runs the entire content workflow every 30 minutes
