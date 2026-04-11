@@ -10,6 +10,9 @@ import aiohttp
 import asyncio
 import json
 import re
+import gc
+import psutil
+import weakref
 
 # Load environment variables from .env file
 load_dotenv()
@@ -98,6 +101,21 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
+# Memory monitoring function
+async def monitor_memory():
+    """Monitor memory usage and log warnings"""
+    process = psutil.Process()
+    memory_mb = process.memory_info().rss / 1024 / 1024
+    
+    if memory_mb > 400:  # Warning at 400MB (close to 512MB limit)
+        print(f"[Memory-Warning] High memory usage: {memory_mb:.1f}MB")
+        # Force garbage collection
+        gc.collect()
+        new_memory_mb = process.memory_info().rss / 1024 / 1024
+        print(f"[Memory-Warning] After GC: {new_memory_mb:.1f}MB")
+    
+    return memory_mb
+
 # Keep-alive task for Render (prevents service from going inactive)
 async def keep_alive_task():
     """Pings own /health endpoint every 4 minutes to prevent Render free tier spin-down"""
@@ -107,21 +125,28 @@ async def keep_alive_task():
     # Determine self URL: Render sets RENDER_EXTERNAL_URL automatically
     service_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:10000")
     ping_url = f"{service_url.rstrip('/')}/health"
+    memory_check_interval = 0
     
     while True:
         try:
+            # Memory monitoring every 10 iterations (40 minutes)
+            if memory_check_interval >= 10:
+                await monitor_memory()
+                memory_check_interval = 0
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     print(f"[Keep-Alive] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Ping OK ({resp.status}) → {ping_url}")
         except Exception as e:
             print(f"[Keep-Alive] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Ping failed: {e}")
         
+        memory_check_interval += 1
         await asyncio.sleep(240)  # every 4 minutes
 
 
 # Workflow task - runs the entire content workflow every 30 minutes
 async def workflow_task():
-    """Run content workflow every 30 minutes"""
+    """Run content workflow every 30 minutes with memory monitoring"""
     # Import here to avoid circular imports
     from content_workflow import ContentWorkflow
     
@@ -131,12 +156,28 @@ async def workflow_task():
     await asyncio.sleep(10)
     
     workflow = ContentWorkflow()
+    cycle_count = 0
     
     while True:
         try:
+            # Monitor memory before each cycle
+            memory_mb = await monitor_memory()
+            if memory_mb > 450:  # If memory is too high, skip this cycle
+                print(f"[Workflow-Task] Skipping cycle due to high memory usage: {memory_mb:.1f}MB")
+                await asyncio.sleep(300)  # Wait 5 minutes and check again
+                continue
+            
             print(f"[Workflow-Task] Running workflow cycle...")
             await workflow.run_cycle()
             print(f"[Workflow-Task] Cycle complete. Waiting for next 30-minute window...")
+            
+            # Periodic memory cleanup every 5 cycles (2.5 hours)
+            cycle_count += 1
+            if cycle_count >= 5:
+                gc.collect()
+                cycle_count = 0
+                print(f"[Workflow-Task] Performed periodic garbage collection")
+                
         except Exception as e:
             print(f"[Workflow-Task] Error in workflow cycle: {e}")
         
