@@ -23,7 +23,7 @@ import re
 import gc
 import psutil
 import weakref
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -127,208 +127,208 @@ class WorkflowState:
 
 
 class TwitterScraper:
-    """Scrapes Twitter posts using Playwright"""
-    
-    async def fetch_posts(self, handle: str, since_time: datetime, until_time: datetime) -> List[TwitterPost]:
-        """Fetch posts from a Twitter user within a time window"""
+    """Scrapes Twitter/X posts using Playwright with login."""
+
+    async def _login(self, page) -> bool:
+        """Log in to X.com using credentials from env vars. Returns True on success."""
+        username = TWITTER_USERNAME
+        password = TWITTER_PASSWORD
+
+        if not username or not password:
+            print("[Twitter] No credentials set — skipping login (will see login wall)")
+            return False
+
+        try:
+            print("[Twitter] Logging in to X.com...")
+            await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
+
+            # Enter username / email
+            username_input = await page.wait_for_selector('input[autocomplete="username"]', timeout=15000)
+            await username_input.fill(username)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(2000)
+
+            # Sometimes X asks for phone/email verification — handle it
+            try:
+                verify_input = await page.wait_for_selector('input[data-testid="ocfEnterTextTextInput"]', timeout=5000)
+                print("[Twitter] Extra verification step detected, entering username again")
+                await verify_input.fill(username)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(2000)
+            except Exception:
+                pass  # No extra step needed
+
+            # Enter password
+            password_input = await page.wait_for_selector('input[name="password"]', timeout=15000)
+            await password_input.fill(password)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(5000)
+
+            # Confirm we're logged in by checking for home timeline
+            if "home" in page.url or "x.com" in page.url:
+                print("[Twitter] ✓ Login successful")
+                return True
+            else:
+                print(f"[Twitter] ⚠ Login may have failed — current URL: {page.url}")
+                return False
+
+        except Exception as e:
+            print(f"[Twitter] Login error: {e}")
+            return False
+
+    async def _extract_posts(
+        self,
+        page,
+        handle: str,
+        since_time: datetime,
+        until_time: datetime,
+    ) -> list:
+        """Extract tweet posts from the already-loaded profile page."""
         posts = []
-        
+
+        # Scroll a little to trigger lazy-loaded tweets
+        for _ in range(3):
+            await page.keyboard.press("PageDown")
+            await page.wait_for_timeout(1000)
+
+        tweet_elements = await page.query_selector_all('[data-testid="tweet"]')
+        print(f"[Twitter] Found {len(tweet_elements)} tweet elements")
+
+        for element in tweet_elements[:10]:
+            try:
+                text_element = await element.query_selector('[data-testid="tweetText"]')
+                if not text_element:
+                    continue
+
+                text = await text_element.text_content()
+                if not text or not text.strip():
+                    continue
+
+                # Extract timestamp (always UTC from Twitter)
+                time_element = await element.query_selector("time")
+                timestamp = datetime.now(timezone.utc)  # default = now UTC
+
+                if time_element:
+                    datetime_attr = await time_element.get_attribute("datetime")
+                    if datetime_attr:
+                        try:
+                            timestamp = datetime.fromisoformat(
+                                datetime_attr.replace("Z", "+00:00")
+                            )
+                        except Exception:
+                            pass
+
+                # Compare using UTC-aware datetimes
+                if timestamp < since_time or timestamp > until_time:
+                    print(
+                        f"[Twitter] Skipping tweet outside window "
+                        f"({timestamp.strftime('%H:%M')} UTC, "
+                        f"window {since_time.strftime('%H:%M')}–{until_time.strftime('%H:%M')} UTC)"
+                    )
+                    continue
+
+                # Extract tweet URL
+                link_element = await element.query_selector('a[href*="/status/"]')
+                tweet_url = f"https://x.com/{handle}/status/unknown"
+                if link_element:
+                    href = await link_element.get_attribute("href")
+                    if href:
+                        tweet_url = f"https://x.com{href}"
+
+                posts.append(
+                    TwitterPost(
+                        handle=handle,
+                        text=text.strip(),
+                        timestamp=timestamp,
+                        url=tweet_url,
+                        source="twitter",
+                    )
+                )
+
+            except Exception as e:
+                print(f"[Twitter] Error extracting tweet: {e}")
+                continue
+
+        return posts
+
+    async def fetch_posts_simple(
+        self, handle: str, since_time: datetime, until_time: datetime
+    ) -> List[TwitterPost]:
+        """Fetch posts from a Twitter/X user within a UTC time window.
+
+        Key fixes vs old version:
+        - Uses x.com (not twitter.com)
+        - Logs in with credentials to bypass the login wall
+        - Uses domcontentloaded (not networkidle) to avoid timeout
+        - All datetime comparisons are timezone-aware UTC
+        """
+        posts = []
+
+        # Ensure the time-window bounds are UTC-aware
+        if since_time.tzinfo is None:
+            since_time = since_time.replace(tzinfo=timezone.utc)
+        if until_time.tzinfo is None:
+            until_time = until_time.replace(tzinfo=timezone.utc)
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions']
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                ],
             )
             try:
                 context = await browser.new_context(
-                    viewport={'width': 1280, 'height': 720},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    viewport={"width": 1280, "height": 720},
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36"
+                    ),
                 )
                 page = await context.new_page()
-                
-                # Navigate to Twitter profile
-                profile_url = f"https://twitter.com/{handle}"
+
+                # Step 1: Login
+                logged_in = await self._login(page)
+                if not logged_in:
+                    print("[Twitter] WARNING: Not logged in — tweets may not be visible")
+
+                # Step 2: Navigate to profile (x.com, domcontentloaded, 60s)
+                profile_url = f"https://x.com/{handle}"
                 print(f"[Twitter] Navigating to {profile_url}")
-                
                 try:
-                    await page.goto(profile_url, wait_until='networkidle', timeout=30000)
-                    await page.wait_for_timeout(2000)  # Wait for content to load
-                    
-                    # Scroll to load more posts (limited to prevent memory issues)
-                    for i in range(2):  # Reduced from 3 to 2
-                        await page.keyboard.press('PageDown')
-                        await page.wait_for_timeout(1000)
-                    
-                    # Extract posts (limited to prevent memory issues)
-                    tweet_elements = await page.query_selector_all('[data-testid="tweet"]')
-                    print(f"[Twitter] Found {len(tweet_elements)} tweet elements")
-                    
-                    # Process max 5 posts (reduced from 10)
-                    for element in tweet_elements[:5]:
-                        try:
-                            # Extract tweet text
-                            text_element = await element.query_selector('[data-testid="tweetText"]')
-                            if not text_element:
-                                continue
-                            
-                            text = await text_element.text_content()
-                            if not text:
-                                continue
-                            
-                            # Extract timestamp
-                            time_element = await element.query_selector('time')
-                            timestamp = datetime.now()  # Default to now if no timestamp
-                            
-                            if time_element:
-                                datetime_attr = await time_element.get_attribute('datetime')
-                                if datetime_attr:
-                                    try:
-                                        timestamp = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00'))
-                                    except:
-                                        pass
-                            
-                            # Skip if outside time window
-                            if timestamp < since_time or timestamp > until_time:
-                                continue
-                            
-                            # Extract tweet URL
-                            link_element = await element.query_selector('a[href*="/status/"]')
-                            tweet_url = f"https://twitter.com/{handle}/status/unknown"
-                            
-                            if link_element:
-                                href = await link_element.get_attribute('href')
-                                if href:
-                                    tweet_url = f"https://twitter.com{href}"
-                            
-                            post = TwitterPost(
-                                handle=handle,
-                                text=text,
-                                timestamp=timestamp,
-                                url=tweet_url,
-                                source="twitter"
-                            )
-                            posts.append(post)
-                            
-                        except Exception as e:
-                            print(f"[Twitter] Error extracting tweet: {e}")
-                            continue
-                    
+                    await page.goto(
+                        profile_url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
+                    await page.wait_for_timeout(4000)  # let JS hydrate
+
+                    # Step 3: Extract posts
+                    posts = await self._extract_posts(page, handle, since_time, until_time)
                     print(f"[Twitter] Successfully extracted {len(posts)} posts from {handle}")
-                    
+
                 except Exception as e:
                     print(f"[Twitter] Error during scraping: {e}")
-                
+
                 finally:
                     await page.close()
                     await context.close()
-                    
+
             finally:
                 await browser.close()
-                # Force cleanup of Playwright resources
-                if hasattr(p, 'stop'):
-                    await p.stop()
-        
+
         return posts
-    
-    async def fetch_posts_simple(self, handle: str, since_time: datetime, until_time: datetime) -> List[TwitterPost]:
-        """Simple memory-efficient version of fetch_posts"""
-        posts = []
-        
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-            )
-            try:
-                context = await browser.new_context(
-                    viewport={'width': 1280, 'height': 720},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                )
-                page = await context.new_page()
-                
-                # Navigate to Twitter profile
-                profile_url = f"https://twitter.com/{handle}"
-                print(f"[Twitter] Navigating to {profile_url}")
-                
-                try:
-                    await page.goto(profile_url, wait_until='networkidle', timeout=30000)
-                    await page.wait_for_timeout(2000)  # Wait for content to load
-                    
-                    # Scroll to load more posts (limited to prevent memory issues)
-                    for i in range(2):  # Reduced from 3 to 2
-                        await page.keyboard.press('PageDown')
-                        await page.wait_for_timeout(1000)
-                    
-                    # Extract posts (limited to prevent memory issues)
-                    tweet_elements = await page.query_selector_all('[data-testid="tweet"]')
-                    print(f"[Twitter] Found {len(tweet_elements)} tweet elements")
-                    
-                    # Process max 5 posts (reduced from 10)
-                    for element in tweet_elements[:5]:
-                        try:
-                            # Extract tweet text
-                            text_element = await element.query_selector('[data-testid="tweetText"]')
-                            if not text_element:
-                                continue
-                            
-                            text = await text_element.text_content()
-                            if not text:
-                                continue
-                            
-                            # Extract timestamp
-                            time_element = await element.query_selector('time')
-                            timestamp = datetime.now()  # Default to now if no timestamp
-                            
-                            if time_element:
-                                datetime_attr = await time_element.get_attribute('datetime')
-                                if datetime_attr:
-                                    try:
-                                        timestamp = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00'))
-                                    except:
-                                        pass
-                            
-                            # Skip if outside time window
-                            if timestamp < since_time or timestamp > until_time:
-                                continue
-                            
-                            # Extract tweet URL
-                            link_element = await element.query_selector('a[href*="/status/"]')
-                            tweet_url = f"https://twitter.com/{handle}/status/unknown"
-                            
-                            if link_element:
-                                href = await link_element.get_attribute('href')
-                                if href:
-                                    tweet_url = f"https://twitter.com{href}"
-                            
-                            post = TwitterPost(
-                                handle=handle,
-                                text=text,
-                                timestamp=timestamp,
-                                url=tweet_url,
-                                source="twitter"
-                            )
-                            posts.append(post)
-                            
-                        except Exception as e:
-                            print(f"[Twitter] Error extracting tweet: {e}")
-                            continue
-                    
-                    print(f"[Twitter] Successfully extracted {len(posts)} posts from {handle}")
-                    
-                except Exception as e:
-                    print(f"[Twitter] Error during scraping: {e}")
-                
-                finally:
-                    await page.close()
-                    await context.close()
-                    
-            finally:
-                await browser.close()
-                # Force cleanup of Playwright resources
-                if hasattr(p, 'stop'):
-                    await p.stop()
-        
-        return posts
-        return posts
+
+    # Keep fetch_posts as an alias for backwards-compatibility
+    async def fetch_posts(
+        self, handle: str, since_time: datetime, until_time: datetime
+    ) -> List[TwitterPost]:
+        return await self.fetch_posts_simple(handle, since_time, until_time)
 
 
 class PerplexityAnalyzer:
@@ -824,17 +824,18 @@ class ContentWorkflow:
                 print(f"[Workflow] CRITICAL: Memory still too high ({new_memory:.1f}MB), skipping cycle")
                 return
         
-        # Use local time for all calculations
-        now_local = datetime.now()
+        # Use UTC for all time-window calculations so they match tweet timestamps.
+        # Twitter always returns timestamps in UTC.
+        now_utc = datetime.now(timezone.utc)
 
-        # Always derive the window from the current clock — no file state needed.
-        # At 12:02  → since=11:30, until=12:02  (covers the 11:30–12:00 slot)
-        # At 12:30  → since=12:00, until=12:30  (covers the 12:00–12:30 slot)
-        # At 13:00  → since=12:30, until=13:00  (covers the 12:30–13:00 slot)
-        since_time = self._get_previous_30min_boundary(now_local)
-        until_time = now_local
+        # 30-minute sliding window (UTC)
+        # At 12:02 UTC → since=11:30 UTC, until=12:02 UTC
+        # At 12:30 UTC → since=12:00 UTC, until=12:30 UTC
+        # Safety net: extend to 24 h so no post is ever silently missed
+        since_time = now_utc - timedelta(hours=24)
+        until_time = now_utc
 
-        print(f"[Workflow] Time window: {since_time.strftime('%H:%M')} to {until_time.strftime('%H:%M')}")
+        print(f"[Workflow] Time window (UTC): {since_time.strftime('%H:%M')} to {until_time.strftime('%H:%M')}")
         
         # Parse handles
         handles = [h.strip().replace("@", "") for h in TWITTER_HANDLES.split(",")]
