@@ -126,51 +126,180 @@ class WorkflowState:
         self._last_cleanup = datetime.now()
 
 
+# ---------------------------------------------------------------------------
+# Stealth JavaScript injected into every page/frame to mask Playwright/Chrome
+# automation signals that X.com uses to detect headless browsers.
+# ---------------------------------------------------------------------------
+_STEALTH_JS = """
+// 1. Mask navigator.webdriver
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// 2. Add fake plugins so navigator.plugins.length > 0
+Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3, 4, 5]
+});
+
+// 3. Fake languages
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['en-US', 'en']
+});
+
+// 4. Override permissions query
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+    parameters.name === 'notifications' ?
+    Promise.resolve({ state: Notification.permission }) :
+    originalQuery(parameters)
+);
+
+// 5. WebGL vendor masking
+try {
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) return 'Intel Inc.';
+        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+        return getParameter.apply(this, [parameter]);
+    };
+} catch(e) {}
+
+// 6. Inject window.chrome so X.com thinks it's a real Chrome
+window.chrome = {
+    runtime: {},
+    loadTimes: function() {},
+    csi: function() {},
+    app: {}
+};
+"""
+
+
 class TwitterScraper:
-    """Scrapes Twitter/X posts using Playwright with login."""
+    """Scrapes Twitter/X posts using Playwright with stealth + login."""
+
+    def _browser_args(self) -> list:
+        """Return Chromium launch args that reduce bot-detection signals."""
+        return [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-extensions",
+            # Critical: removes the 'HeadlessChrome' token from the UA
+            "--disable-blink-features=AutomationControlled",
+            "--disable-infobars",
+            "--window-size=1280,720",
+        ]
+
+    async def _make_stealth_context(self, browser):
+        """Create a browser context with stealth JS and a realistic UA."""
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 720},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            timezone_id="America/New_York",
+        )
+        # Inject stealth JS into every page/frame before any script runs
+        await context.add_init_script(_STEALTH_JS)
+        return context
 
     async def _login(self, page) -> bool:
-        """Log in to X.com using credentials from env vars. Returns True on success."""
+        """Log in to X.com. Returns True on success."""
         username = TWITTER_USERNAME
         password = TWITTER_PASSWORD
 
         if not username or not password:
-            print("[Twitter] No credentials set — skipping login (will see login wall)")
+            print("[Twitter] No credentials set — skipping login")
             return False
 
         try:
             print("[Twitter] Logging in to X.com...")
-            await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)
-
-            # Enter username / email
-            username_input = await page.wait_for_selector('input[autocomplete="username"]', timeout=15000)
-            await username_input.fill(username)
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(2000)
-
-            # Sometimes X asks for phone/email verification — handle it
-            try:
-                verify_input = await page.wait_for_selector('input[data-testid="ocfEnterTextTextInput"]', timeout=5000)
-                print("[Twitter] Extra verification step detected, entering username again")
-                await verify_input.fill(username)
-                await page.keyboard.press("Enter")
-                await page.wait_for_timeout(2000)
-            except Exception:
-                pass  # No extra step needed
-
-            # Enter password
-            password_input = await page.wait_for_selector('input[name="password"]', timeout=15000)
-            await password_input.fill(password)
-            await page.keyboard.press("Enter")
+            await page.goto(
+                "https://x.com/i/flow/login",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            # Wait a bit longer so JS renders the React login form
             await page.wait_for_timeout(5000)
 
-            # Confirm we're logged in by checking for home timeline
-            if "home" in page.url or "x.com" in page.url:
+            # --- Username step ---
+            # Try multiple selectors in order; X.com occasionally changes them
+            username_selectors = [
+                'input[autocomplete="username"]',
+                'input[name="text"]',
+                'input[data-testid="ocfEnterTextTextInput"]',
+                'input[type="text"]',
+            ]
+            username_input = None
+            for sel in username_selectors:
+                try:
+                    username_input = await page.wait_for_selector(sel, timeout=8000)
+                    if username_input:
+                        print(f"[Twitter] Found username field via: {sel}")
+                        break
+                except Exception:
+                    continue
+
+            if not username_input:
+                # Dump the page HTML to help diagnose future failures
+                html_snippet = (await page.content())[:500]
+                print(f"[Twitter] Could not find username input. Page snippet: {html_snippet}")
+                return False
+
+            await username_input.click()
+            await page.wait_for_timeout(500)
+            await username_input.fill(username)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(3000)
+
+            # --- Optional verification step (phone/email challenge) ---
+            try:
+                verify_input = await page.wait_for_selector(
+                    'input[data-testid="ocfEnterTextTextInput"]', timeout=5000
+                )
+                print("[Twitter] Extra verification step — entering username again")
+                await verify_input.fill(username)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+            # --- Password step ---
+            password_selectors = [
+                'input[name="password"]',
+                'input[type="password"]',
+            ]
+            password_input = None
+            for sel in password_selectors:
+                try:
+                    password_input = await page.wait_for_selector(sel, timeout=8000)
+                    if password_input:
+                        print(f"[Twitter] Found password field via: {sel}")
+                        break
+                except Exception:
+                    continue
+
+            if not password_input:
+                print("[Twitter] Could not find password input after username step")
+                return False
+
+            await password_input.click()
+            await page.wait_for_timeout(500)
+            await password_input.fill(password)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(6000)
+
+            current_url = page.url
+            print(f"[Twitter] Post-login URL: {current_url}")
+
+            # Consider login successful if we left the /login flow
+            if "/login" not in current_url and "/flow" not in current_url:
                 print("[Twitter] ✓ Login successful")
                 return True
             else:
-                print(f"[Twitter] ⚠ Login may have failed — current URL: {page.url}")
+                html_snippet = (await page.content())[:500]
+                print(f"[Twitter] ⚠ Still on login page. Snippet: {html_snippet}")
                 return False
 
         except Exception as e:
@@ -274,22 +403,10 @@ class TwitterScraper:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-extensions",
-                ],
+                args=self._browser_args(),
             )
             try:
-                context = await browser.new_context(
-                    viewport={"width": 1280, "height": 720},
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36"
-                    ),
-                )
+                context = await self._make_stealth_context(browser)
                 page = await context.new_page()
 
                 # Step 1: Login
